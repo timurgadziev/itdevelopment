@@ -1,0 +1,691 @@
+import React, { Component } from 'react';
+import PropTypes from 'prop-types'
+import {
+    StyleSheet,
+    View,
+    Text,
+    Image,
+    ImageBackground,
+    TouchableOpacity    
+} from 'react-native';
+
+import { Icon } from 'react-native-elements';
+import Button from 'apsl-react-native-button'
+import Modal from 'react-native-modal'
+import ImagePicker from 'react-native-image-picker';
+import * as Storage from '../Helper/Storage'
+import ProgressBar from '../Widgets/ProgressBar'
+import Toast, {DURATION} from 'react-native-easy-toast'
+import { Navigation } from 'react-native-navigation'
+
+import Styles from '../assets/styles/styles'
+
+import * as CIMAService from '../Helper/CIMAService'
+import * as Api from '../constants/api'
+import * as Configuration from '../constants/configuration'
+
+import * as cimaActions from '../actions/cima.action';
+import { bindActionCreators } from 'redux';
+import { connect } from 'react-redux';
+
+import dateFormat from 'dateformat'
+
+class HomePage extends Component {
+	constructor(props) {
+        super(props);
+
+        this.state = {
+            isModalVisible: false,
+            isProgressVisible: false,
+        }
+
+        this.goPurchasePage = this.goPurchasePage.bind(this)
+        this.goSettingPage = this.goSettingPage.bind(this)
+        this.showModal = this.showModal.bind(this)
+        this.hideModal = this.hideModal.bind(this)
+    }
+
+    userInfoSuccess = (res) => {
+        console.log('server --> client(user info success): ', res.data)
+
+        // check if user is registered.
+        if (res.data.result == Api.ERROR) {
+            Storage.setToken( '' )
+
+            if (Platform.OS === "android") {
+                this.hideProgress()
+            }
+            
+            Navigation.startSingleScreenApp({
+                screen: {
+                    screen: 'Registration.PhonenumberPage',
+                },
+                appStyle: {
+                    orientation: 'portrait',
+                },
+            });
+        } else if (res.data.result == Api.OK) {
+            this.hideProgress()
+
+            // update storage
+            Storage.setAvatarUri(Api.SERVER_URL + res.data.users.picture_avatar)
+            Storage.setEmail(res.data.users.user_email == undefined? '':res.data.users.user_email)
+            Storage.setAddress(res.data.users.user_address == undefined? '':res.data.users.user_address)
+            Storage.setFirstName(res.data.users.firstName)
+            Storage.setLastName(res.data.users.familyName)
+            Storage.setGender(res.data.users.gender == undefined? '':res.data.users.gender)
+            Storage.setPDFUrl(Api.SERVER_URL + res.data.users.pdf_url)
+
+            // guardian/emergency info
+            Storage.setEmergencyPerson( res.data.users.guardian_name === ''? res.data.users.emergency_name : res.data.users.guardian_name  )
+            Storage.setEmergencyNumber( res.data.users.guardian_phoneNumber === ''? res.data.users.emergency_phoneNumber : res.data.users.guardian_phoneNumber  )
+            Storage.setEmergencyRelationship( res.data.users.guardian_relationship === ''? res.data.users.emergency_relationship : res.data.users.guardian_relationship )
+
+            // pass
+            Storage.setPasses( JSON.stringify(res.data.pass) )
+
+            // update ui
+            var personalInfo = {
+                avatarUri: Api.SERVER_URL + res.data.users.picture_avatar,
+                firstName: res.data.users.firstName,
+                lastName: res.data.users.familyName,
+                gender: res.data.users.gender == undefined? '':res.data.users.gender,
+                email: res.data.users.user_email == undefined? '':res.data.users.user_email,
+                phoneNumber: res.data.users.user_phoneNumber,
+                address: res.data.users.user_address == undefined? '':res.data.users.user_address
+            }
+    
+            this.props.actions.personalInfoChanged( personalInfo )
+    
+            var passesInfo = res.data.pass
+    
+            // update available passes
+            passesInfo.map((item, i) => {
+                var passInfo = {
+                    type: item.type,
+                    from: item.from,
+                    to: item.to,
+                    available: true,
+                    used: item.used,
+                    quantity: item.quantity
+                }
+    
+                switch (item.type) {
+                    case Api.SEASONPASS_TYPE: 
+                        seasonPassUpdated = true
+                        this.props.actions.seasonPassChanged( passInfo )
+                        break;
+                    case Api.MULTIPASS_TYPE: 
+                        multiPassUpdated = true
+                        this.props.actions.multiPassChanged( passInfo )
+                        break;
+                    case Api.DAYPASS_TYPE: 
+                        dayPassUpdated = true
+                        this.props.actions.dayPassChanged( passInfo )
+                        break;
+                    case Api.PROMOPASS_TYPE: 
+                        promoPassUpdated = true
+                        this.props.actions.promoPassChanged( passInfo )
+                        break;
+                }
+            }) // passesInfo.map((item, i)
+        } else {
+            this.hideProgress()
+            
+            this.refs.toast.show('Service Error');
+        }
+    }
+
+    userInfoFailed = (err) => {
+        console.log('server --> client(user info failed): ', err)
+        
+        // hide modal
+        this.hideProgress()
+
+        this.refs.toast.show('Network error');
+    }
+
+    async componentDidMount() {
+        if (this.props.skipUserInfoUpdate == null) {
+            var param = {
+                user_id: await Storage.getUserID(),
+                user_token: await Storage.getToken(),
+                timestamp: new Date().getTime()
+            }
+
+            // show progress dialog
+            this.showProgress()
+
+            console.log('client --> server(userinfo): ', param)
+
+            CIMAService.sendPostRequestAsync(Api.USERINFO, param, this.userInfoSuccess, this.userInfoFailed )
+        } else {
+            var personalInfo = {
+                avatarUri: await Storage.getAvatarUri(),
+                firstName: await Storage.getFirstName(),
+                lastName: await Storage.getLastName(),
+                nric: await Storage.getNRIC(),
+                dob: await Storage.getDOB(),
+                phoneNumber: await Storage.getPhonenumber(),
+            }
+
+            this.props.actions.personalInfoChanged( personalInfo )
+
+            var passesInfo = JSON.parse( await Storage.getPasses() )
+
+            // refresh the pass buttons in the case of no pass
+            if (passesInfo.length < 1) {
+                var passInfo = {
+                    from: new Date().getTime(),
+                    to: new Date().getTime(),
+                    available: false,
+                    used: false,
+                    quantity: 0
+                }
+
+                this.props.actions.seasonPassChanged( {
+                    ...passInfo,
+                    type: Api.SEASONPASS_TYPE,
+                } )
+
+                this.props.actions.multiPassChanged( {
+                    ...passInfo,
+                    type: Api.MULTIPASS_TYPE,
+                } )
+
+                this.props.actions.dayPassChanged( {
+                    ...passInfo,
+                    type: Api.DAYPASS_TYPE,
+                } )
+
+                this.props.actions.promoPassChanged( {
+                    ...passInfo,
+                    type: Api.PROMOPASS_TYPE,
+                } )
+            }            
+
+            // update available passes
+            passesInfo.map((item, i) => {
+                var passInfo = {
+                    type: item.type,
+                    from: item.from,
+                    to: item.to,
+                    available: true,
+                    used: item.used,
+                    quantity: item.quantity
+                }
+
+                switch (item.type) {
+                    case Api.SEASONPASS_TYPE: 
+                        seasonPassUpdated = true
+                        this.props.actions.seasonPassChanged( passInfo )
+                        break;
+                    case Api.MULTIPASS_TYPE: 
+                        multiPassUpdated = true
+                        this.props.actions.multiPassChanged( passInfo )
+                        break;
+                    case Api.DAYPASS_TYPE: 
+                        dayPassUpdated = true
+                        this.props.actions.dayPassChanged( passInfo )
+                        break;
+                    case Api.PROMOPASS_TYPE: 
+                        promoPassUpdated = true
+                        this.props.actions.promoPassChanged( passInfo )
+                        break;
+                }
+            })
+
+            if (await Storage.getFirstLogin() === 'true') {
+                var signupDate = await Storage.getSignupDate()
+                if ( signupDate != '') {
+                    var validPromoDate = new Date(parseInt(signupDate))
+                    validPromoDate.setMonth( validPromoDate.getMonth() + 1 )
+                    validPromoDate.setHours(0, 0, 0, 0)
+
+                    this.props.actions.validPromoDateChanged( dateFormat(validPromoDate, "dd mmm yyyy") )
+
+                    var today = new Date()
+                    today.setHours(0, 0, 0, 0)
+                    if ( validPromoDate > today ) {
+                        this.showModal()
+                    }
+                }
+            }
+        } // else
+
+    }
+
+    showModal = () => this.setState({ isModalVisible: true })    
+    hideModal = () => this.setState({ isModalVisible: false })
+
+    showProgress = () => this.setState({ isProgressVisible: true })    
+    hideProgress = () => this.setState({ isProgressVisible: false })
+
+    goPurchasePage() {
+        this.props.navigator.push({
+            screen: 'Main.PurchasePage'
+        });
+    }
+
+    goSettingPage() {
+        this.props.navigator.push({
+            screen: 'Main.SettingsPage'
+        });
+    }
+
+    async goPassInOutPage( _pass ) {
+        var pass = {
+            ..._pass
+        }
+
+        if (!pass.available) {
+            return
+        }
+
+        if (pass.type == Api.PROMOPASS_TYPE) {
+
+            if ( this.props.seasonPassInfo.used || this.props.dayPassInfo.used || this.props.multiPassInfo.used ) {
+                return
+            }
+        }
+
+        if (pass.type == Api.SEASONPASS_TYPE) {
+
+            if ( this.props.promoPassInfo.used || this.props.dayPassInfo.used || this.props.multiPassInfo.used ) {
+                return
+            }
+
+            // return if the start date of season pass is greater than today
+            var startDate = new Date(pass.from)
+            var today = new Date()
+            today.setHours(0, 0, 0, 0)
+            if ( startDate > today ) {
+                this.refs.toast.show('The pass will be available from ' + dateFormat(new Date(pass.from), "dd mmm yyyy"));
+                return
+            }
+        }
+
+        if (pass.type == Api.DAYPASS_TYPE) {
+
+            if ( this.props.promoPassInfo.used || this.props.seasonPassInfo.used || this.props.multiPassInfo.used ) {
+                return
+            }
+        }
+
+        if (pass.type == Api.MULTIPASS_TYPE) {
+
+            if ( this.props.promoPassInfo.used || this.props.seasonPassInfo.used || this.props.dayPassInfo.used ) {
+                return
+            }
+        }
+
+        if ( pass.used ) {
+            this.props.navigator.push({
+                screen: 'Passes.QRCodePage',
+                passProps: {
+                    baseUrl: Api.GYMOUT,
+                    userId: await Storage.getUserID(),
+                    timestamp: new Date().getTime(),
+                    pass,
+                    userToken: await Storage.getToken()
+                }
+            });
+        } else {
+            this.props.navigator.push({
+                screen: 'Passes.PassInOutPage',
+                passProps: {
+                    pass,
+                }
+            });
+        }
+    }
+
+    openImagePicker( e ) {        
+        var options = {
+            title: 'Select photo',
+            storageOptions: {
+				skipBackup: true,
+				path: 'images'
+            },
+            mediaType: 'photo'
+		};
+        ImagePicker.showImagePicker(options, (response) => {
+            console.log('Response = ', response);
+          
+            if (response.didCancel) {
+                console.log('User cancelled image picker');
+            } else if (response.error) {
+                console.log('ImagePicker Error: ', response.error);
+            }
+            else if (response.customButton) {
+              console.log('User tapped custom button: ', response.customButton);
+            }
+            else {
+                // let source = { uri: response.uri};
+                // this.setState({
+                //     avatarSource: source
+                // });
+                // console.log(this.state.avatarSource.uri);
+            }
+		});
+    }
+
+    closeAlert = () => {
+        this.hideModal()
+        Storage.setFirstLogin( 'false' )
+    }
+
+    onAvatarError = () => {
+        var personalInfo = {
+            avatarUri: '',
+            firstName: this.props.personalInfo.firstName,
+            lastName: this.props.personalInfo.lastName,
+            phoneNumber: this.props.personalInfo.phoneNumber
+        }
+
+        this.props.actions.personalInfoChanged( personalInfo )
+    }
+
+	render() {
+        let backgroundImage = require('../assets/images/background.png');
+        let closeImage = require('../assets/images/close-circle.png');
+        let checkImage = require('../assets/images/check-circle.png');
+
+        const { personalInfo, multiPassInfo, promoPassInfo, dayPassInfo, seasonPassInfo, validPromoDate } = this.props;
+
+		return (
+            <ImageBackground source={backgroundImage} style={Styles.backgroundImage}>
+                <View style={ [Styles.innerContainer, style.container, Styles.middlePadding] } >
+                    {/* avatar */}
+                    <View style={ [ style.avatarContainer,] } >
+                        <View style={style.avatarImage}>
+                            {/* <TouchableOpacity onPress={() => this.openImagePicker() }> */}
+                                { 
+                                    personalInfo.avatarUri == '' ?
+                                    <Icon name="user"
+                                        type="entypo"
+                                        size={40}
+                                        color="#d8d8d8"
+                                    />
+                                        :
+                                    <Image 
+                                        style={style.avatarImage} 
+                                        source={ {uri: personalInfo.avatarUri} } 
+                                        onError={ this.onAvatarError }
+                                    />
+                                }
+                            {/* </TouchableOpacity> */}
+                        </View>
+
+                        {/* space */}
+                        <View style={ [Styles.normalSpace] } />
+
+                        <View style={ [Styles.stretch, style.avatarInfoContainer] }>
+                            <Text style={ [Styles.lightGrayColor, Styles.middleFont] }>{personalInfo.firstName} {personalInfo.lastName}</Text>
+                            <Text style={ [Styles.lightGrayColor, Styles.middleFont] }>{personalInfo.phoneNumber}</Text>
+                        </View>
+                    </View>
+
+                    {/* space */}
+                    <View style={ [Styles.middleSpace] } />
+
+                    {/* pass container */}
+                    <View style={ [style.container] } >
+                        {/* season & multi pass */}
+                        <View style={[style.passContainer, Styles.stretch]}>
+                            {/* season pass */}
+                            <View style={ [style.container] }>
+                                <Button
+                                    textStyle={ [ Styles.largeFont, Styles.whiteColor, Styles.smallPadding] }                    
+                                    style={[Styles.stretch, seasonPassInfo.available? style.passActiveButton : style.passInactiveButton]}
+                                    onPress={() => this.goPassInOutPage( seasonPassInfo )}
+                                    activeOpacity={seasonPassInfo.available? 0.5:1} >
+                                    SEASON PASS
+                                </Button>
+                                <View style={[Styles.iconBadge, seasonPassInfo.used? Styles.visible : Styles.hidden]}>
+                                    <Image source={ checkImage } style={style.passUsed} /> 
+                                </View>
+                            </View>
+                            
+                            {/* space */}
+                            <View style={ [Styles.normalSpace] } />
+
+                            {/* multi pass */}
+                            <View style={style.container}>
+                                <Button
+                                    textStyle={ [Styles.largeFont, Styles.whiteColor, Styles.smallPadding] }                    
+                                    style={[Styles.stretch, multiPassInfo.available? style.passActiveButton : style.passInactiveButton]}
+                                    onPress={() => this.goPassInOutPage( multiPassInfo )} 
+                                    activeOpacity={multiPassInfo.available? 0.5:1} >
+                                    MULTI PASS
+                                </Button>
+                            </View>
+                            <View style={[Styles.iconBadge, multiPassInfo.used? Styles.visible : Styles.hidden]}>
+                                <Image source={ checkImage } style={style.passUsed} /> 
+                            </View>
+                        </View>
+
+                        {/* space */}
+                        <View style={ [Styles.smallSpace] } />
+
+                        {/* day & promo pass */}
+                        <View style={[style.passContainer, Styles.stretch]}>
+                            {/* day pass */}
+                            <View style={ [style.container] }>
+                                <Button
+                                    textStyle={ [ Styles.largeFont, Styles.whiteColor, Styles.smallPadding] }                    
+                                    style={[Styles.stretch, dayPassInfo.available? style.passActiveButton : style.passInactiveButton]}
+                                    onPress={() => this.goPassInOutPage( dayPassInfo )} 
+                                    activeOpacity={dayPassInfo.available? 0.5:1} >
+                                    DAY PASS
+                                </Button>
+                                <View style={[Styles.iconBadge, dayPassInfo.used? Styles.visible : Styles.hidden]}>
+                                    <Image source={ checkImage } style={style.passUsed} /> 
+                                </View>
+                            </View>
+
+                            {/* space */}
+                            <View style={ [Styles.normalSpace] } />
+
+                            {/* promo pass */}
+                            <View style={style.container}>
+                                <Button
+                                    textStyle={ [Styles.largeFont, Styles.whiteColor, Styles.smallPadding] }                    
+                                    style={[Styles.stretch, promoPassInfo.available? style.passActiveButton : style.passInactiveButton]}
+                                    onPress={() => this.goPassInOutPage( promoPassInfo )} 
+                                    activeOpacity={promoPassInfo.available? 0.5:1} >
+                                    PROMO PASS
+                                </Button>
+                                <View style={[Styles.iconBadge, promoPassInfo.used? Styles.visible : Styles.hidden]}>                                    
+                                    <Image source={ checkImage } style={style.passUsed} />                                    
+                                </View>
+                            </View>                        
+                        </View>
+                    </View>
+
+                    {/* space */}
+                    <View style={ [Styles.middleSpace] } />
+
+                    {/* buy button */}
+                    <Button
+                        textStyle={ [Styles.largeFont, Styles.whiteColor] }                    
+                        style={[Styles.activeButton]}
+                        activeOpacity={0.5}
+                        onPress={() => this.goPurchasePage()} >
+                        BUY
+                    </Button>
+
+                    {/* space */}
+                    <View style={ [Styles.smallSpace] } />
+
+                    {/* setting button */}
+                    <Button
+                        textStyle={ [Styles.largeFont, Styles.whiteColor] }                    
+                        style={[Styles.activeButton]}
+                        activeOpacity={0.5}
+                        onPress={() => this.goSettingPage()} >
+                        SETTINGS
+                    </Button>
+                    
+                    {/* modal dialog */}
+                    <Modal isVisible={this.state.isModalVisible}>
+                        <View style={ [style.container, ] }>
+                            {/* alertView */}
+                            <View style={ [style.alertView,] } >
+                                <View style={ [style.alertContent, Styles.normalPadding] } >
+                                    <Text style={style.alertTitleText}>Hello {personalInfo.firstName},</Text>
+                                    
+                                    {/* space */}
+                                    <View style={ [Styles.smallSpace] } />
+                                    
+                                    <Text style={style.alertContentText}>Welcome to BoulderWorld! Under “Settings”, please fill up the rest of your info to get one free pass! Valid only until {validPromoDate}.</Text>
+                                </View>
+
+                                <View style={[Styles.iconBadge]}>
+                                    <TouchableOpacity style={{flex: 1}} key={1} onPress={() => this.closeAlert() }>
+                                        <Image source={ closeImage } style={style.closeImage} />
+                                    </TouchableOpacity>
+                                </View>
+                            </View>
+                            
+                        </View>
+                    </Modal> 
+
+                    {/* progress dialog */}
+                    <Modal isVisible={this.state.isProgressVisible}>
+                        <View style={ [Styles.centerInColumn, ] }>
+                            <ProgressBar />
+                        </View>
+                    </Modal>
+
+                    <Toast ref="toast"/>
+                </View>
+            </ImageBackground>
+		);
+	}
+}
+
+const style = StyleSheet.create({
+    container: {
+        flex: 1,
+        flexDirection: 'column',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    avatarContainer: {
+        flexDirection: 'row',
+        justifyContent: 'flex-start',
+        alignItems: 'center',
+    },
+    avatarInfoContainer: {
+        flexDirection: 'column',
+        justifyContent: 'space-between',
+        alignItems: 'flex-start',
+        height: 50
+    },
+    avatarImage: {
+        width: 56,
+        height: 56,
+        borderWidth: 2,
+        borderColor: '#d8d8d8',
+        borderRadius: 28,
+        justifyContent: 'center',
+        alignItems: 'center'
+    },
+    passContainer: {
+        flexDirection: 'row',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    passInactiveButton: {
+        backgroundColor: '#d8d8d8',
+        borderColor: '#d8d8d8'
+        // borderLeftWidth: 1,
+        // borderTopWidth: 1,
+        // borderBottomWidth: 2,
+        // borderRightWidth: 0.5,
+        // borderBottomColor: '#0D606B',
+        // borderRightColor: '#0D606B',
+        // borderLeftColor: 'red',
+        // borderTopColor: 'red',
+    },
+    passActiveButton: {
+        backgroundColor: '#5EC3AE',
+        borderColor: '#5EC3AE'
+        // borderLeftWidth: 0,
+        // borderTopWidth: 0,
+        // borderBottomWidth: 2,
+        // borderRightWidth: 0.5,
+        // borderColor: '#0D606B',
+    }, 
+    alertView: {
+        height: 180,
+        width: 250,
+        flexDirection: 'column',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    alertContent: {
+        height: 170,
+        width: 240,
+        borderRadius: 5,
+        backgroundColor: '#F9AD51',
+        flexDirection: 'column',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    alertTitleText: {
+        alignSelf: 'stretch',
+        color: 'white'
+    },
+    alertContentText: {
+        flex: 1,
+        alignSelf: 'stretch',
+        color: 'white'
+    },
+    closeImage: {
+        height: 28,
+        width: 28
+    },
+    passUsed: {
+        height: 28,
+        width: 28
+    }
+})
+
+HomePage.navigatorStyle = {
+    navBarHidden: true,
+    navBarTransparent: true,
+    navBarTranslucent: true,
+    drawUnderNavBar: true,
+    navBarButtonColor: 'transparent'
+};
+
+HomePage.propTypes = {
+	actions: PropTypes.object.isRequired,
+    personalInfo: PropTypes.object.isRequired,
+    promoPassInfo: PropTypes.object,
+    multiPassInfo: PropTypes.object,
+    seasonPassInfo: PropTypes.object,
+    dayPassInfo: PropTypes.object,
+    validPromoDate: PropTypes.string
+};
+
+function mapStateToProps(state, ownProps) {
+    return {
+        personalInfo: state.cima.personalInfo,
+        promoPassInfo: state.cima.promoPassInfo,
+        multiPassInfo: state.cima.multiPassInfo,
+        seasonPassInfo: state.cima.seasonPassInfo,
+        dayPassInfo: state.cima.dayPassInfo,
+        validPromoDate: state.cima.validPromoDate
+    };
+}
+  
+function mapDispatchToProps(dispatch) {
+    return {
+		actions: bindActionCreators(cimaActions, dispatch)
+	};
+}
+
+export default connect(mapStateToProps, mapDispatchToProps)(HomePage);
